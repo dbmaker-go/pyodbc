@@ -1,5 +1,5 @@
 import os, sys, platform
-from os.path import join, dirname, abspath, basename
+from os.path import join, dirname, abspath
 import unittest
 from distutils.util import get_platform
 
@@ -41,7 +41,7 @@ def print_library_info(cnxn):
     import pyodbc
     print('python:  %s' % sys.version)
     print('pyodbc:  %s %s' % (pyodbc.version, os.path.abspath(pyodbc.__file__)))
-#    print('odbc:    %s' % cnxn.getinfo(pyodbc.SQL_ODBC_VER))
+    print('odbc:    %s' % cnxn.getinfo(pyodbc.SQL_ODBC_VER))
     print('driver:  %s %s' % (cnxn.getinfo(pyodbc.SQL_DRIVER_NAME), cnxn.getinfo(pyodbc.SQL_DRIVER_VER)))
     print('         supports ODBC version %s' % cnxn.getinfo(pyodbc.SQL_DRIVER_ODBC_VER))
     print('os:      %s' % platform.system())
@@ -87,8 +87,8 @@ def load_setup_connection_string(section):
     If the file does not exist or if it exists but does not contain the connection string, None is returned.  If the
     file exists but cannot be parsed, an exception is raised.
     """
-    from os.path import exists, join, dirname, splitext, basename
-    from configparser import SafeConfigParser
+    from os.path import exists, join, dirname
+    from configparser import ConfigParser
 
     FILENAME = 'setup.cfg'
     KEY      = 'connection-string'
@@ -105,7 +105,7 @@ def load_setup_connection_string(section):
         path = parent
 
     try:
-        p = SafeConfigParser()
+        p = ConfigParser()
         p.read(fqn)
     except:
         raise SystemExit('Unable to parse %s: %s' % (path, sys.exc_info()[1]))

@@ -1,5 +1,4 @@
 #!/usr/bin/python
-# -*- coding: latin-1 -*-
 
 usage = """\
 usage: %prog [options] connection_string
@@ -193,7 +192,7 @@ class SqliteTestCase(unittest.TestCase):
         locals()['test_text_%s' % len(value)] = _maketest(value)
 
     def test_text_upperlatin(self):
-        self._test_strtype('varchar', 'แ')
+        self._test_strtype('varchar', 'รก')
 
     #
     # blob
@@ -283,7 +282,7 @@ class SqliteTestCase(unittest.TestCase):
         self.assertEqual(result, input)
 
     def test_negative_bigint(self):
-        # Issue 186: BIGINT problem on 32-bit architeture
+        # Issue 186: BIGINT problem on 32-bit architecture
         input = -430000000
         self.cursor.execute("create table t1(d bigint)")
         self.cursor.execute("insert into t1 values (?)", input)
