@@ -52,9 +52,6 @@ struct Connection
     TextEnc sqlchar_enc;        // encoding used when reading SQL_CHAR data
     TextEnc sqlwchar_enc;       // encoding used when reading SQL_WCHAR data
     TextEnc unicode_enc;        // encoding used when writing unicode strings
-#if PY_MAJOR_VERSION < 3
-    TextEnc str_enc;            // encoding used when writing non-unicode strings
-#endif
 
     TextEnc metadata_enc;
     // Used when reading column names for Cursor.description.  I originally thought I could use
@@ -78,7 +75,7 @@ struct Connection
 
     SQLLEN GetMaxLength(SQLSMALLINT ctype) const
     {
-        I(ctype == SQL_C_BINARY || ctype == SQL_C_WCHAR || ctype == SQL_C_CHAR);
+        assert(ctype == SQL_C_BINARY || ctype == SQL_C_WCHAR || ctype == SQL_C_CHAR);
         if (maxwrite != 0)
             return maxwrite;
         if (ctype == SQL_C_BINARY)
@@ -90,16 +87,13 @@ struct Connection
 
     bool need_long_data_len;
 
-    // Output conversions.  Maps from SQL type in conv_types to the converter function in conv_funcs.
+    PyObject* map_sqltype_to_converter;
+    // If converters are defined, this will be a dictionary mapping from the SQLTYPE cast to an
+    // int (because types can be negative) to the converter function.
     //
-    // If conv_count is zero, conv_types and conv_funcs will also be zero.
-    //
-    // pyodbc uses this manual mapping for speed and portability.  The STL collection classes use the new operator and
-    // throw exceptions when out of memory.  pyodbc does not use any exceptions.
-
-    int conv_count;             // how many items are in conv_types and conv_funcs.
-    SQLSMALLINT* conv_types;            // array of SQL_TYPEs to convert
-    PyObject** conv_funcs;      // array of Python functions
+    // Unfortunately each lookup requires creating a Python object.  To bypass this when output
+    // converters are not used, we keep this pointer null until the first converter is added,
+    // which is fast to check.
 };
 
 #define Connection_Check(op) PyObject_TypeCheck(op, &ConnectionType)
@@ -109,12 +103,14 @@ struct Connection
  * Used by the module's connect function to create new connection objects.  If unable to connect to the database, an
  * exception is set and zero is returned.
  */
-PyObject* Connection_New(PyObject* pConnectString, bool fAutoCommit, bool fAnsi, long timeout, bool fReadOnly,
+PyObject* Connection_New(PyObject* pConnectString, bool fAutoCommit, long timeout, bool fReadOnly,
                          PyObject* attrs_before, Object& encoding);
 
 /*
  * Used by the Cursor to implement commit and rollback.
  */
 PyObject* Connection_endtrans(Connection* cnxn, SQLSMALLINT type);
+
+PyObject* Connection_GetConverter(Connection* cnxn, SQLSMALLINT type);
 
 #endif

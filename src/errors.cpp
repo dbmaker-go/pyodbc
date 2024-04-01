@@ -25,7 +25,7 @@ static const struct SqlStateMapping sql_state_mapping[] =
     { "08007", 5, &OperationalError },
     { "08S01", 5, &OperationalError },
     { "0A000", 5, &NotSupportedError },
-    { "28000", 5, &DatabaseError },
+    { "28000", 5, &InterfaceError },
     { "40002", 5, &IntegrityError },
     { "22",    2, &DataError },
     { "23",    2, &IntegrityError },
@@ -68,11 +68,11 @@ PyObject* RaiseErrorV(const char* sqlstate, PyObject* exc_class, const char* for
         exc_class = ExceptionFromSqlState(sqlstate);
 
     // Note: Don't use any native strprintf routines.  With Py_ssize_t, we need "%zd", but VC .NET doesn't support it.
-    // PyString_FromFormatV already takes this into account.
+    // PyUnicode_FromFormatV already takes this into account.
 
     va_list marker;
     va_start(marker, format);
-    PyObject* pMsg = PyString_FromFormatV(format, marker);
+    PyObject* pMsg = PyUnicode_FromFormatV(format, marker);
     va_end(marker);
     if (!pMsg)
     {
@@ -88,7 +88,7 @@ PyObject* RaiseErrorV(const char* sqlstate, PyObject* exc_class, const char* for
     pAttrs = Py_BuildValue("(Os)", pMsg, sqlstate);
     if (pAttrs)
     {
-        pError = PyEval_CallObject(exc_class, pAttrs);
+        pError = PyObject_CallObject(exc_class, pAttrs);
         if (pError)
             RaiseErrorFromException(pError);
     }
@@ -101,38 +101,24 @@ PyObject* RaiseErrorV(const char* sqlstate, PyObject* exc_class, const char* for
 }
 
 
-#if PY_MAJOR_VERSION < 3
-#define PyString_CompareWithASCIIString(lhs, rhs) _strcmpi(PyString_AS_STRING(lhs), rhs)
-#else
-#define PyString_CompareWithASCIIString PyUnicode_CompareWithASCIIString
-#endif
-
-
 bool HasSqlState(PyObject* ex, const char* szSqlState)
 {
-    // Returns true if `ex` is an exception and has the given SQLSTATE.  It is safe to pass 0 for ex.
+  // Returns true if `ex` is an exception and has the given SQLSTATE.  It is safe to pass 0 for
+  // `ex`.
 
-    bool has = false;
+  if (!ex)
+    return false;
 
-    if (ex)
-    {
-        PyObject* args = PyObject_GetAttrString(ex, "args");
-        if (args != 0)
-        {
-            PyObject* s = PySequence_GetItem(args, 1);
-            if (s != 0 && PyString_Check(s))
-            {
-                // const char* sz = PyString_AsString(s);
-                // if (sz && _strcmpi(sz, szSqlState) == 0)
-                //     has = true;
-                has = (PyString_CompareWithASCIIString(s, szSqlState) == 0);
-            }
-            Py_XDECREF(s);
-            Py_DECREF(args);
-        }
-    }
+  Object args(PyObject_GetAttrString(ex, "args"));
+  if (!args)
+    return false;
 
-    return has;
+  Object sqlstate(PySequence_GetItem(args, 1));
+  if (!sqlstate || !PyBytes_Check(sqlstate))
+    return false;
+
+  const char* sz = PyBytes_AsString(sqlstate);
+  return (sz && _strcmpi(sz, szSqlState) == 0);
 }
 
 
@@ -159,7 +145,7 @@ static PyObject* GetError(const char* sqlstate, PyObject* exc_class, PyObject* p
 
     PyTuple_SetItem(pAttrs, 1, pMsg); // pAttrs now owns the pMsg reference; steals a reference, does not increment
 
-    pSqlState = PyString_FromString(sqlstate);
+    pSqlState = PyUnicode_FromString(sqlstate);
     if (!pSqlState)
     {
         Py_DECREF(pAttrs);
@@ -168,7 +154,7 @@ static PyObject* GetError(const char* sqlstate, PyObject* exc_class, PyObject* p
 
     PyTuple_SetItem(pAttrs, 0, pSqlState); // pAttrs now owns the pSqlState reference
 
-    pError = PyEval_CallObject(exc_class, pAttrs); // pError will incref pAttrs
+    pError = PyObject_CallObject(exc_class, pAttrs); // pError will incref pAttrs
 
     Py_XDECREF(pAttrs);
 
@@ -216,9 +202,9 @@ PyObject* GetErrorFromHandle(Connection *conn, const char* szFunction, HDBC hdbc
     SQLINTEGER nNativeError;
     SQLSMALLINT cchMsg;
 
-    ODBCCHAR sqlstateT[6];
+    uint16_t sqlstateT[6];
     SQLSMALLINT msgLen = 1023;
-    ODBCCHAR *szMsg = (ODBCCHAR*) pyodbc_malloc((msgLen + 1) * sizeof(ODBCCHAR));
+    uint16_t *szMsg = (uint16_t*) PyMem_Malloc((msgLen + 1) * sizeof(uint16_t));
 
     if (!szMsg) {
         PyErr_NoMemory();
@@ -265,9 +251,9 @@ PyObject* GetErrorFromHandle(Connection *conn, const char* szFunction, HDBC hdbc
         // If needed, allocate a bigger error message buffer and retry.
         if (cchMsg > msgLen - 1) {
             msgLen = cchMsg + 1;
-            if (!pyodbc_realloc((BYTE**) &szMsg, (msgLen + 1) * sizeof(ODBCCHAR))) {
+            if (!PyMem_Realloc((BYTE**) &szMsg, (msgLen + 1) * sizeof(uint16_t))) {
                 PyErr_NoMemory();
-                pyodbc_free(szMsg);
+                PyMem_Free(szMsg);
                 return 0;
             }
             Py_BEGIN_ALLOW_THREADS
@@ -283,7 +269,7 @@ PyObject* GetErrorFromHandle(Connection *conn, const char* szFunction, HDBC hdbc
         // For now, default to UTF-16 if this is not in the context of a connection.
         // Note that this will not work if the DM is using a different wide encoding (e.g. UTF-32).
         const char *unicode_enc = conn ? conn->metadata_enc.name : ENCSTR_UTF16NE;
-        Object msgStr(PyUnicode_Decode((char*)szMsg, cchMsg * sizeof(ODBCCHAR), unicode_enc, "strict"));
+        Object msgStr(PyUnicode_Decode((char*)szMsg, cchMsg * sizeof(uint16_t), unicode_enc, "strict"));
 
         if (cchMsg != 0 && msgStr.Get())
         {
@@ -295,7 +281,7 @@ PyObject* GetErrorFromHandle(Connection *conn, const char* szFunction, HDBC hdbc
                 msg = PyUnicode_FromFormat("[%s] %V (%ld) (%s)", sqlstate, msgStr.Get(), "(null)", (long)nNativeError, szFunction);
                 if (!msg) {
                     PyErr_NoMemory();
-                    pyodbc_free(szMsg);
+                    PyMem_Free(szMsg);
                     return 0;
                 }
             }
@@ -323,14 +309,14 @@ PyObject* GetErrorFromHandle(Connection *conn, const char* szFunction, HDBC hdbc
     }
 
     // Raw message buffer not needed anymore
-    pyodbc_free(szMsg);
+    PyMem_Free(szMsg);
 
-    if (!msg || PyUnicode_GetSize(msg.Get()) == 0)
+    if (!msg || PyUnicode_GET_LENGTH(msg.Get()) == 0)
     {
         // This only happens using unixODBC.  (Haven't tried iODBC yet.)  Either the driver or the driver manager is
         // buggy and has signaled a fault without recording error information.
         sqlstate[0] = '\0';
-        msg = PyString_FromString(DEFAULT_ERROR);
+        msg = PyUnicode_FromString(DEFAULT_ERROR);
         if (!msg)
         {
             PyErr_NoMemory();

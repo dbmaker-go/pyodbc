@@ -45,7 +45,7 @@ void FreeRowValues(Py_ssize_t cValues, PyObject** apValues)
     {
         for (Py_ssize_t i = 0; i < cValues; i++)
             Py_XDECREF(apValues[i]);
-        pyodbc_free(apValues);
+        PyMem_Free(apValues);
     }
 }
 
@@ -74,17 +74,17 @@ static PyObject* Row_getstate(PyObject* self)
     if (row->description == 0)
         return PyTuple_New(0);
 
-    Tuple state(PyTuple_New(2 + row->cValues));
+    Object state(PyTuple_New(2 + row->cValues));
     if (!state.IsValid())
         return 0;
 
-    state[0] = row->description;
-    state[1] = row->map_name_to_index;
+    PyTuple_SET_ITEM(state, 0, row->description);
+    PyTuple_SET_ITEM(state, 1, row->map_name_to_index);
     for (int i = 0; i < row->cValues; i++)
-        state[i+2] = row->apValues[i];
+      PyTuple_SET_ITEM(state, i+2, row->apValues[i]);
 
-    for (int i = 0; i < 2 + row->cValues; i++)
-        Py_XINCREF(state[i]);
+    for (int i = 0; i < PyTuple_GET_SIZE(state); i++)
+      Py_XINCREF(PyTuple_GET_ITEM(state, i));
 
     return state.Detach();
 }
@@ -110,7 +110,7 @@ static PyObject* new_check(PyObject* args)
     if (PyDict_Size(map) != cols || PyTuple_GET_SIZE(args) - 2 != cols)
         return 0;
 
-    PyObject** apValues = (PyObject**)pyodbc_malloc(sizeof(PyObject*) * cols);
+    PyObject** apValues = (PyObject**)PyMem_Malloc(sizeof(PyObject*) * cols);
     if (!apValues)
         return 0;
 
@@ -258,59 +258,23 @@ static int Row_setattro(PyObject* o, PyObject *name, PyObject* v)
 
 static PyObject* Row_repr(PyObject* o)
 {
+    // We want to return the same representation as a tuple.  The easiest way is to create a
+    // temporary tuple.  I do not consider this something normally used in high performance
+    // areas.
+
     Row* self = (Row*)o;
 
-    if (self->cValues == 0)
-        return PyString_FromString("()");
+    Object t(PyTuple_New(self->cValues));
+    if (!t)
+      return 0;
 
-    Object pieces(PyTuple_New(self->cValues));
-    if (!pieces)
-        return 0;
-
-    Py_ssize_t length = 2 + (2 * (self->cValues-1)); // parens + ', ' separators
-
-    for (Py_ssize_t i = 0; i < self->cValues; i++)
-    {
-        PyObject* piece = PyObject_Repr(self->apValues[i]);
-        if (!piece)
-            return 0;
-
-        length += Text_Size(piece);
-
-        PyTuple_SET_ITEM(pieces.Get(), i, piece);
+    for (Py_ssize_t i = 0; i < self->cValues; i++) {
+        Py_INCREF(self->apValues[i]);
+        PyTuple_SET_ITEM(t.Get(), i, self->apValues[i]);
     }
 
-    if (self->cValues == 1)
-    {
-        // Need a trailing comma: (value,)
-        length += 2;
-    }
-
-    PyObject* result = Text_New(length);
-    if (!result)
-        return 0;
-    TEXT_T* buffer = Text_Buffer(result);
-    Py_ssize_t offset = 0;
-    buffer[offset++] = '(';
-    for (Py_ssize_t i = 0; i < self->cValues; i++)
-    {
-        PyObject* item = PyTuple_GET_ITEM(pieces.Get(), i);
-        memcpy(&buffer[offset], Text_Buffer(item), Text_Size(item) * sizeof(TEXT_T));
-        offset += Text_Size(item);
-
-        if (i != self->cValues-1 || self->cValues == 1)
-        {
-            buffer[offset++] = ',';
-            buffer[offset++] = ' ';
-        }
-    }
-    buffer[offset++] = ')';
-
-    I(offset == length);
-
-    return result;
+    return PyObject_Repr(t);
 }
-
 
 static PyObject* Row_richcompare(PyObject* olhs, PyObject* orhs, int op)
 {
@@ -388,13 +352,8 @@ static PyObject* Row_subscript(PyObject* o, PyObject* key)
     if (PySlice_Check(key))
     {
         Py_ssize_t start, stop, step, slicelength;
-#if PY_VERSION_HEX >= 0x03020000
         if (PySlice_GetIndicesEx(key, row->cValues, &start, &stop, &step, &slicelength) < 0)
             return 0;
-#else
-        if (PySlice_GetIndicesEx((PySliceObject*)key, row->cValues, &start, &stop, &step, &slicelength) < 0)
-            return 0;
-#endif
 
         if (slicelength <= 0)
             return PyTuple_New(0);

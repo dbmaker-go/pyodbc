@@ -1,12 +1,10 @@
 #!/usr/bin/python
-# -*- coding: utf-8 -*-
-
-x = 1 # Getting an error if starting with usage for some reason.
+# -*- coding: latin-1 -*-
 
 usage = """\
-usage: %prog [options] connection_string
+%(prog)s [options] connection_string
 
-Unit tests for Azure SQL DW.  To use, pass a connection string as the parameter.
+Unit tests for Informix DB.  To use, pass a connection string as the parameter.
 The tests will create and drop tables t1 and t2 as necessary.
 
 These run using the version from the 'build' directory, not the version
@@ -15,25 +13,15 @@ before running the tests.
 
 You can also put the connection string into a tmp/setup.cfg file like so:
 
-  [sqldwtests]
-  connection-string=DRIVER={SQL Server};SERVER=localhost;UID=uid;PWD=pwd;DATABASE=db
-
-The connection string above will use the 2000/2005 driver, even if SQL Server 2008
-is installed:
-
-  2000: DRIVER={SQL Server}
-  2005: DRIVER={SQL Server}
-  2008: DRIVER={SQL Server Native Client 10.0}
-  
-If using FreeTDS ODBC, be sure to use version 1.00.97 or newer.
+  [informixtests]
+  connection-string=DRIVER={IBM INFORMIX ODBC DRIVER (64-bit)};SERVER=localhost;UID=uid;PWD=pwd;DATABASE=db
 """
 
-import sys, os, re, uuid
+import sys, os, re
 import unittest
 from decimal import Decimal
 from datetime import datetime, date, time
 from os.path import join, getsize, dirname, abspath
-from warnings import warn
 from testutils import *
 
 _TESTSTR = '0123456789-abcdefghijklmnopqrstuvwxyz-'
@@ -51,71 +39,48 @@ def _generate_test_string(length):
     if length <= len(_TESTSTR):
         return _TESTSTR[:length]
 
-    c = int((length + len(_TESTSTR)-1) / len(_TESTSTR))
+    c = (length + len(_TESTSTR)-1) / len(_TESTSTR)
     v = _TESTSTR * c
     return v[:length]
 
-class SqlServerTestCase(unittest.TestCase):
+class InformixTestCase(unittest.TestCase):
 
     SMALL_FENCEPOST_SIZES = [ 0, 1, 255, 256, 510, 511, 512, 1023, 1024, 2047, 2048, 4000 ]
     LARGE_FENCEPOST_SIZES = [ 4095, 4096, 4097, 10 * 1024, 20 * 1024 ]
 
-    STR_FENCEPOSTS = [ _generate_test_string(size) for size in SMALL_FENCEPOST_SIZES ]
-    BYTE_FENCEPOSTS    = [ bytes(s, 'ascii') for s in STR_FENCEPOSTS ]
-    IMAGE_FENCEPOSTS   = BYTE_FENCEPOSTS + [ bytes(_generate_test_string(size), 'ascii') for size in LARGE_FENCEPOST_SIZES ]
+    ANSI_FENCEPOSTS    = [ _generate_test_string(size) for size in SMALL_FENCEPOST_SIZES ]
+    UNICODE_FENCEPOSTS = [ unicode(s) for s in ANSI_FENCEPOSTS ]
+    IMAGE_FENCEPOSTS   = ANSI_FENCEPOSTS + [ _generate_test_string(size) for size in LARGE_FENCEPOST_SIZES ]
 
     def __init__(self, method_name, connection_string):
         unittest.TestCase.__init__(self, method_name)
         self.connection_string = connection_string
 
-    def driver_type_is(self, type_name):
-        recognized_types = {
-            'msodbcsql': '(Microsoft) ODBC Driver xx for SQL Server',
-            'freetds': 'FreeTDS ODBC',
-        }
-        if not type_name in recognized_types.keys():
-            raise KeyError('"{0}" is not a recognized driver type: {1}'.format(type_name, list(recognized_types.keys())))
-        driver_name = self.cnxn.getinfo(pyodbc.SQL_DRIVER_NAME).lower()
-        if type_name == 'msodbcsql':
-            return ('msodbcsql' in driver_name) or ('sqlncli' in driver_name) or ('sqlsrv32.dll' == driver_name)
-        elif type_name == 'freetds':
-            return ('tdsodbc' in driver_name)
-
-    def get_sqlserver_version(self):
-        """
-        Returns the major version: 8-->2000, 9-->2005, 10-->2008
-        """
-        self.cursor.execute("SELECT CAST(SERVERPROPERTY('ProductVersion') AS VARCHAR(255))")
-        row = self.cursor.fetchone()
-        return int(row[0].split('.', 1)[0])
-
     def setUp(self):
         self.cnxn   = pyodbc.connect(self.connection_string)
         self.cursor = self.cnxn.cursor()
 
-        # I (Kleehammer) have been using a latin1 collation.  If you have a
-        # different collation, you'll need to update this.  If someone knows of
-        # a good way for this to be dynamic, please update.  (I suppose we
-        # could maintain a map from collation to encoding?)
-        self.cnxn.setdecoding(pyodbc.SQL_CHAR, 'latin1')
-
         for i in range(3):
             try:
                 self.cursor.execute("drop table t%d" % i)
+                self.cnxn.commit()
             except:
                 pass
 
         for i in range(3):
             try:
                 self.cursor.execute("drop procedure proc%d" % i)
+                self.cnxn.commit()
             except:
                 pass
 
         try:
             self.cursor.execute('drop function func1')
+            self.cnxn.commit()
         except:
             pass
 
+        self.cnxn.rollback()
 
     def tearDown(self):
         try:
@@ -124,16 +89,6 @@ class SqlServerTestCase(unittest.TestCase):
         except:
             # If we've already closed the cursor or connection, exceptions are thrown.
             pass
-
-    def _simpletest(datatype, value):
-        # A simple test that can be used for any data type where the Python
-        # type we write is also what we expect to receive.
-        def _t(self):
-            self.cursor.execute('create table t1(value %s)' % datatype)
-            self.cursor.execute('insert into t1 values (?)', value)
-            result = self.cursor.execute("select value from t1").fetchone()[0]
-            self.assertEqual(result, value)
-        return _t
 
     def test_multiple_bindings(self):
         "More than one bind and select on a cursor"
@@ -144,7 +99,7 @@ class SqlServerTestCase(unittest.TestCase):
         for i in range(3):
             self.cursor.execute("select n from t1 where n < ?", 10)
             self.cursor.execute("select n from t1 where n < 3")
-
+        
 
     def test_different_bindings(self):
         self.cursor.execute("create table t1(n int)")
@@ -170,7 +125,7 @@ class SqlServerTestCase(unittest.TestCase):
 
     def test_getinfo_int(self):
         value = self.cnxn.getinfo(pyodbc.SQL_DEFAULT_TXN_ISOLATION)
-        self.assertTrue(isinstance(value, (int, int)))
+        self.assertTrue(isinstance(value, (int, long)))
 
     def test_getinfo_smallint(self):
         value = self.cnxn.getinfo(pyodbc.SQL_CONCAT_NULL_BEHAVIOR)
@@ -181,13 +136,20 @@ class SqlServerTestCase(unittest.TestCase):
         self.cursor.noscan = True
         self.assertEqual(self.cursor.noscan, True)
 
+    def test_guid(self):
+        self.cursor.execute("create table t1(g1 uniqueidentifier)")
+        self.cursor.execute("insert into t1 values (newid())")
+        v = self.cursor.execute("select * from t1").fetchone()[0]
+        self.assertEqual(type(v), str)
+        self.assertEqual(len(v), 36)
+
     def test_nextset(self):
         self.cursor.execute("create table t1(i int)")
         for i in range(4):
             self.cursor.execute("insert into t1(i) values(?)", i)
 
         self.cursor.execute("select i from t1 where i < 2 order by i; select i from t1 where i >= 2 order by i")
-
+        
         for i, row in enumerate(self.cursor):
             self.assertEqual(i, row.i)
 
@@ -196,87 +158,54 @@ class SqlServerTestCase(unittest.TestCase):
         for i, row in enumerate(self.cursor):
             self.assertEqual(i + 2, row.i)
 
-    def test_nextset_with_raiserror(self):
-        self.cursor.execute("select i = 1; RAISERROR('c', 16, 1);")
-        row = next(self.cursor)
-        self.assertEqual(1, row.i)
-        if self.driver_type_is('freetds'):
-            warn('FREETDS_KNOWN_ISSUE - test_nextset_with_raiserror: test cancelled.')
-            # AssertionError: ProgrammingError not raised by nextset
-            # https://github.com/FreeTDS/freetds/issues/230
-            return  # for now
-        self.assertRaises(pyodbc.ProgrammingError, self.cursor.nextset)
-
     def test_fixed_unicode(self):
-        value = "t\xebsting"
+        value = u"t\xebsting"
         self.cursor.execute("create table t1(s nchar(7))")
-        self.cursor.execute("insert into t1 values(?)", "t\xebsting")
+        self.cursor.execute("insert into t1 values(?)", u"t\xebsting")
         v = self.cursor.execute("select * from t1").fetchone()[0]
-        self.assertEqual(type(v), str)
+        self.assertEqual(type(v), unicode)
         self.assertEqual(len(v), len(value)) # If we alloc'd wrong, the test below might work because of an embedded NULL
         self.assertEqual(v, value)
 
 
-    def _test_strtype(self, sqltype, value, resulttype=None, colsize=None):
+    def _test_strtype(self, sqltype, value, colsize=None):
         """
         The implementation for string, Unicode, and binary tests.
         """
-        assert colsize is None or isinstance(colsize, int), colsize
         assert colsize is None or (value is None or colsize >= len(value))
 
         if colsize:
             sql = "create table t1(s %s(%s))" % (sqltype, colsize)
         else:
             sql = "create table t1(s %s)" % sqltype
-        if colsize >= 2000 and (sqltype == 'nvarchar' or sqltype == 'varchar'):
-            self.cursor.setinputsizes([(pyodbc.SQL_WVARCHAR, 0, 0)])
+
         self.cursor.execute(sql)
-
-        if resulttype is None:
-            resulttype = type(value)
-
-        sql = "insert into t1 values(?)"
-        try:
-            self.cursor.execute(sql, value)
-        except pyodbc.DataError:
-            if self.driver_type_is('freetds'):
-                # FREETDS_KNOWN_ISSUE
-                #
-                # cnxn.getinfo(pyodbc.SQL_DESCRIBE_PARAMETER) returns False for FreeTDS, so
-                # pyodbc can't call SQLDescribeParam to get the correct parameter type.
-                # This can lead to errors being returned from SQL Server when sp_prepexec is called, 
-                # e.g., "Implicit conversion from data type varchar to varbinary is not allowed." 
-                # for test_binary_null
-                #
-                # So at least verify that the user can manually specify the parameter type
-                if sqltype == 'varbinary':
-                    sql_param_type = pyodbc.SQL_VARBINARY
-                    # (add elif blocks for other cases as required)
-                self.cursor.setinputsizes([(sql_param_type, colsize, 0)])
-                self.cursor.execute(sql, value)
-            else:
-                raise
+        self.cursor.execute("insert into t1 values(?)", value)
         v = self.cursor.execute("select * from t1").fetchone()[0]
-        self.assertEqual(type(v), resulttype)
+        self.assertEqual(type(v), type(value))
 
         if value is not None:
             self.assertEqual(len(v), len(value))
 
-        # To allow buffer --> db --> bytearray tests, always convert the input to the expected result type before
-        # comparing.
-        if type(value) is not resulttype:
-            value = resulttype(value)
-
         self.assertEqual(v, value)
 
+        # Reported by Andy Hochhaus in the pyodbc group: In 2.1.7 and earlier, a hardcoded length of 255 was used to
+        # determine whether a parameter was bound as a SQL_VARCHAR or SQL_LONGVARCHAR.  Apparently SQL Server chokes if
+        # we bind as a SQL_LONGVARCHAR and the target column size is 8000 or less, which is considers just SQL_VARCHAR.
+        # This means binding a 256 character value would cause problems if compared with a VARCHAR column under
+        # 8001. We now use SQLGetTypeInfo to determine the time to switch.
+        #
+        # [42000] [Microsoft][SQL Server Native Client 10.0][SQL Server]The data types varchar and text are incompatible in the equal to operator.
 
-    def _test_strliketype(self, sqltype, value, resulttype=None, colsize=None):
+        self.cursor.execute("select * from t1 where s=?", value)
+
+
+    def _test_strliketype(self, sqltype, value, colsize=None):
         """
         The implementation for text, image, ntext, and binary.
 
         These types do not support comparison operators.
         """
-        assert colsize is None or isinstance(colsize, int), colsize
         assert colsize is None or (value is None or colsize >= len(value))
 
         if colsize:
@@ -284,21 +213,15 @@ class SqlServerTestCase(unittest.TestCase):
         else:
             sql = "create table t1(s %s)" % sqltype
 
-        if resulttype is None:
-            resulttype = type(value)
-
         self.cursor.execute(sql)
         self.cursor.execute("insert into t1 values(?)", value)
-        result = self.cursor.execute("select * from t1").fetchone()[0]
+        v = self.cursor.execute("select * from t1").fetchone()[0]
+        self.assertEqual(type(v), type(value))
 
-        self.assertEqual(type(result), resulttype)
+        if value is not None:
+            self.assertEqual(len(v), len(value))
 
-        # To allow buffer --> db --> bytearray tests, always convert the input to the expected result type before
-        # comparing.
-        if type(value) is not resulttype:
-            value = resulttype(value)
-
-        self.assertEqual(result, value)
+        self.assertEqual(v, value)
 
 
     #
@@ -306,14 +229,14 @@ class SqlServerTestCase(unittest.TestCase):
     #
 
     def test_varchar_null(self):
-        self._test_strtype('varchar', None, colsize=100)
+        self._test_strtype('varchar', None, 100)
 
     # Generate a test for each fencepost size: test_varchar_0, etc.
     def _maketest(value):
         def t(self):
-            self._test_strtype('varchar', value, colsize=len(value))
+            self._test_strtype('varchar', value, len(value))
         return t
-    for value in STR_FENCEPOSTS:
+    for value in ANSI_FENCEPOSTS:
         locals()['test_varchar_%s' % len(value)] = _maketest(value)
 
     def test_varchar_many(self):
@@ -330,99 +253,84 @@ class SqlServerTestCase(unittest.TestCase):
         self.assertEqual(v2, row.c2)
         self.assertEqual(v3, row.c3)
 
+    def test_varchar_upperlatin(self):
+        self._test_strtype('varchar', '�')
+
     #
-    # nvarchar
+    # unicode
     #
 
     def test_unicode_null(self):
-        self._test_strtype('nvarchar', None, colsize=100)
+        self._test_strtype('nvarchar', None, 100)
 
     # Generate a test for each fencepost size: test_unicode_0, etc.
     def _maketest(value):
         def t(self):
-            self._test_strtype('nvarchar', value, colsize=len(value))
+            self._test_strtype('nvarchar', value, len(value))
         return t
-    for value in STR_FENCEPOSTS:
+    for value in UNICODE_FENCEPOSTS:
         locals()['test_unicode_%s' % len(value)] = _maketest(value)
 
-    def test_unicode_longmax(self):
-        # Issue 188:	Segfault when fetching NVARCHAR(MAX) data over 511 bytes
-
-        ver = self.get_sqlserver_version()
-        if ver < 9:            # 2005+
-            return              # so pass / ignore
-        self.cursor.execute("select cast(replicate(N'x', 512) as nvarchar(max))")
-
-    # From issue #206
-    def _maketest(value):
-        def t(self):
-            self._test_strtype('nvarchar', value, colsize=len(value))
-        return t
-    locals()['test_chinese_param'] = _maketest('我的')
-
-    def test_chinese(self):
-        v = '我的'
-        self.cursor.execute(u"SELECT N'我的' AS [Name]")
-        row = self.cursor.fetchone()
-        self.assertEqual(row[0], v)
-
-        self.cursor.execute(u"SELECT N'我的' AS [Name]")
-        rows = self.cursor.fetchall()
-        self.assertEqual(rows[0][0], v)
-
-    def test_fast_executemany_to_local_temp_table(self):
-        if self.driver_type_is('freetds'):
-            warn('FREETDS_KNOWN_ISSUE - test_fast_executemany_to_local_temp_table: test cancelled.')
-            return 
-        v = 'Ώπα'
-        self.cursor.execute("CREATE TABLE #issue295 (id INT, txt NVARCHAR(50))")
-        sql = "INSERT INTO #issue295 (txt) VALUES (?)"
-        params = [(v,)]
-        self.cursor.setinputsizes([(pyodbc.SQL_WVARCHAR, 50, 0)])
-        self.cursor.fast_executemany = True
-        self.cursor.executemany(sql, params)
-        self.assertEqual(self.cursor.execute("SELECT txt FROM #issue295").fetchval(), v)
+    def test_unicode_upperlatin(self):
+        self._test_strtype('varchar', '�')
 
     #
     # binary
     #
 
-    # def test_binary_null(self):
-        # self._test_strtype('varbinary', None, colsize=100)
+    def test_null_binary(self):
+        self._test_strtype('varbinary', None, 100)
+     
+    def test_large_null_binary(self):
+        # Bug 1575064
+        self._test_strtype('varbinary', None, 4000)
 
-    # bytearray
-
+    # Generate a test for each fencepost size: test_unicode_0, etc.
     def _maketest(value):
         def t(self):
-            self._test_strtype('varbinary', bytearray(value), colsize=len(value), resulttype=bytes)
+            self._test_strtype('varbinary', buffer(value), len(value))
         return t
-    for value in BYTE_FENCEPOSTS:
-        locals()['test_binary_bytearray_%s' % len(value)] = _maketest(value)
+    for value in ANSI_FENCEPOSTS:
+        locals()['test_binary_%s' % len(value)] = _maketest(value)
 
-    # bytes
+    #
+    # image
+    #
 
+    def test_image_null(self):
+        self._test_strliketype('image', None)
+
+    # Generate a test for each fencepost size: test_unicode_0, etc.
     def _maketest(value):
         def t(self):
-            self._test_strtype('varbinary', bytes(value), colsize=len(value))
+            self._test_strliketype('image', buffer(value))
         return t
-    for value in BYTE_FENCEPOSTS:
-        locals()['test_binary_bytes_%s' % len(value)] = _maketest(value)
+    for value in IMAGE_FENCEPOSTS:
+        locals()['test_image_%s' % len(value)] = _maketest(value)
 
-
-    # bytearray
-
-
-
-    # bytes
-
-
+    def test_image_upperlatin(self):
+        self._test_strliketype('image', buffer('�'))
 
     #
     # text
     #
 
+    # def test_empty_text(self):
+    #     self._test_strliketype('text', buffer(''))
 
+    def test_null_text(self):
+        self._test_strliketype('text', None)
 
+    # Generate a test for each fencepost size: test_unicode_0, etc.
+    def _maketest(value):
+        def t(self):
+            self._test_strliketype('text', value)
+        return t
+    for value in ANSI_FENCEPOSTS:
+        locals()['test_text_%s' % len(value)] = _maketest(value)
+
+    def test_text_upperlatin(self):
+        self._test_strliketype('text', '�')
 
     #
     # bit
@@ -451,7 +359,6 @@ class SqlServerTestCase(unittest.TestCase):
             decStr = decStr + "." + '9' * scale
         if negative:
             decStr = "-" + decStr
-
         value = Decimal(decStr)
 
         self.cursor.execute("insert into t1 values(?)", value)
@@ -504,7 +411,7 @@ class SqlServerTestCase(unittest.TestCase):
 
     def _exec(self):
         self.cursor.execute(self.sql)
-
+        
     def test_close_cnxn(self):
         """Make sure using a Cursor after closing its connection doesn't crash."""
 
@@ -513,7 +420,7 @@ class SqlServerTestCase(unittest.TestCase):
         self.cursor.execute("select * from t1")
 
         self.cnxn.close()
-
+        
         # Now that the connection is closed, we expect an exception.  (If the code attempts to use
         # the HSTMT, we'll get an access violation instead.)
         self.sql = "select * from t1"
@@ -523,18 +430,10 @@ class SqlServerTestCase(unittest.TestCase):
         self.cursor.execute("create table t1(s varchar(20))")
         self.cursor.execute("insert into t1 values(?)", "")
 
-    def test_empty_string_encoding(self):
-        self.cnxn.setdecoding(pyodbc.SQL_CHAR, encoding='shift_jis')
-        value = ""
-        self.cursor.execute("create table t1(s varchar(20))")
-        self.cursor.execute("insert into t1 values(?)", value)
-        v = self.cursor.execute("select * from t1").fetchone()[0]
-        self.assertEqual(v, value)
-
     def test_fixed_str(self):
         value = "testing"
         self.cursor.execute("create table t1(s char(7))")
-        self.cursor.execute("insert into t1 values(?)", value)
+        self.cursor.execute("insert into t1 values(?)", "testing")
         v = self.cursor.execute("select * from t1").fetchone()[0]
         self.assertEqual(type(v), str)
         self.assertEqual(len(v), len(value)) # If we alloc'd wrong, the test below might work because of an embedded NULL
@@ -542,16 +441,11 @@ class SqlServerTestCase(unittest.TestCase):
 
     def test_empty_unicode(self):
         self.cursor.execute("create table t1(s nvarchar(20))")
-        self.cursor.execute("insert into t1 values(?)", "")
+        self.cursor.execute("insert into t1 values(?)", u"")
 
-    def test_empty_unicode_encoding(self):
-        self.cnxn.setdecoding(pyodbc.SQL_CHAR, encoding='shift_jis')
-        value = ""
-        self.cursor.execute("create table t1(s nvarchar(20))")
-        self.cursor.execute("insert into t1 values(?)", value)
-        v = self.cursor.execute("select * from t1").fetchone()[0]
-        self.assertEqual(v, value)
-
+    def test_unicode_query(self):
+        self.cursor.execute(u"select 1")
+        
     def test_negative_row_index(self):
         self.cursor.execute("create table t1(s varchar(20))")
         self.cursor.execute("insert into t1 values(?)", "1")
@@ -573,7 +467,7 @@ class SqlServerTestCase(unittest.TestCase):
         self.cursor.execute("insert into t1 values (?)", value)
 
         result = self.cursor.execute("select dt from t1").fetchone()[0]
-        self.assertEqual(type(result), datetime)
+        self.assertEqual(type(value), datetime)
         self.assertEqual(value, result)
 
     def test_datetime_fraction(self):
@@ -581,13 +475,13 @@ class SqlServerTestCase(unittest.TestCase):
         # supported is xxx000.
 
         value = datetime(2007, 1, 15, 3, 4, 5, 123000)
-
+     
         self.cursor.execute("create table t1(dt datetime)")
         self.cursor.execute("insert into t1 values (?)", value)
-
+     
         result = self.cursor.execute("select dt from t1").fetchone()[0]
-        self.assertEqual(type(result), datetime)
-        self.assertEqual(value, result)
+        self.assertEqual(type(value), datetime)
+        self.assertEqual(result, value)
 
     def test_datetime_fraction_rounded(self):
         # SQL Server supports milliseconds, but Python's datetime supports nanoseconds.  pyodbc rounds down to what the
@@ -595,44 +489,36 @@ class SqlServerTestCase(unittest.TestCase):
 
         full    = datetime(2007, 1, 15, 3, 4, 5, 123456)
         rounded = datetime(2007, 1, 15, 3, 4, 5, 123000)
-
+     
         self.cursor.execute("create table t1(dt datetime)")
         self.cursor.execute("insert into t1 values (?)", full)
-
+     
         result = self.cursor.execute("select dt from t1").fetchone()[0]
         self.assertEqual(type(result), datetime)
-        self.assertEqual(rounded, result)
+        self.assertEqual(result, rounded)
 
     def test_date(self):
-        ver = self.get_sqlserver_version()
-        if ver < 10:            # 2008 only
-            return              # so pass / ignore
-
         value = date.today()
-
+     
         self.cursor.execute("create table t1(d date)")
         self.cursor.execute("insert into t1 values (?)", value)
-
+     
         result = self.cursor.execute("select d from t1").fetchone()[0]
-        self.assertEqual(type(result), date)
+        self.assertEqual(type(value), date)
         self.assertEqual(value, result)
 
     def test_time(self):
-        ver = self.get_sqlserver_version()
-        if ver < 10:            # 2008 only
-            return              # so pass / ignore
-
         value = datetime.now().time()
-
+        
         # We aren't yet writing values using the new extended time type so the value written to the database is only
         # down to the second.
         value = value.replace(microsecond=0)
-
+         
         self.cursor.execute("create table t1(t time)")
         self.cursor.execute("insert into t1 values (?)", value)
-
+         
         result = self.cursor.execute("select t from t1").fetchone()[0]
-        self.assertEqual(type(result), time)
+        self.assertEqual(type(value), time)
         self.assertEqual(value, result)
 
     def test_datetime2(self):
@@ -642,7 +528,7 @@ class SqlServerTestCase(unittest.TestCase):
         self.cursor.execute("insert into t1 values (?)", value)
 
         result = self.cursor.execute("select dt from t1").fetchone()[0]
-        self.assertEqual(type(result), datetime)
+        self.assertEqual(type(value), datetime)
         self.assertEqual(value, result)
 
     #
@@ -683,6 +569,7 @@ class SqlServerTestCase(unittest.TestCase):
         self.cursor.execute("insert into t1 values (?)", value)
         result  = self.cursor.execute("select n from t1").fetchone()[0]
         self.assertEqual(value, result)
+
 
     #
     # stored procedures
@@ -732,6 +619,26 @@ class SqlServerTestCase(unittest.TestCase):
         self.assertEqual(type(rows[0].refdate), datetime)
 
 
+    def test_sp_results_from_vartbl(self):
+        self.cursor.execute(
+            """
+            Create procedure proc1
+            AS
+              set nocount on
+              declare @tmptbl table(name varchar(100), id int, xtype varchar(4), refdate datetime)
+
+              insert into @tmptbl
+              select top 10 name, id, xtype, refdate
+              from sysobjects
+
+              select * from @tmptbl
+            """)
+        self.cursor.execute("exec proc1")
+        rows = self.cursor.fetchall()
+        self.assertEqual(type(rows), list)
+        self.assertEqual(len(rows), 10) # there has to be at least 10 items in sysobjects
+        self.assertEqual(type(rows[0].refdate), datetime)
+
     def test_sp_with_dates(self):
         # Reported in the forums that passing two datetimes to a stored procedure doesn't work.
         self.cursor.execute(
@@ -771,7 +678,7 @@ class SqlServerTestCase(unittest.TestCase):
         rows = self.cursor.fetchall()
         self.assertTrue(rows is not None)
         self.assertTrue(rows[0][0] == None)   # 0 years apart
-
+        
 
     #
     # rowcount
@@ -819,9 +726,7 @@ class SqlServerTestCase(unittest.TestCase):
         self.assertEqual(self.cursor.rowcount, -1)
 
     def test_rowcount_reset(self):
-        "Ensure rowcount is reset after DDL"
-        
-        ddl_rowcount = 0 if self.driver_type_is('freetds') else -1
+        "Ensure rowcount is reset to -1"
 
         self.cursor.execute("create table t1(i int)")
         count = 4
@@ -830,7 +735,7 @@ class SqlServerTestCase(unittest.TestCase):
         self.assertEqual(self.cursor.rowcount, 1)
 
         self.cursor.execute("create table t2(i int)")
-        self.assertEqual(self.cursor.rowcount, ddl_rowcount)
+        self.assertEqual(self.cursor.rowcount, -1)
 
     #
     # always return Cursor
@@ -868,18 +773,6 @@ class SqlServerTestCase(unittest.TestCase):
     # misc
     #
 
-    def table_with_spaces(self):
-        "Ensure we can select using [x z] syntax"
-
-        try:
-            self.cursor.execute("create table [test one](int n)")
-            self.cursor.execute("insert into [test one] values(1)")
-            self.cursor.execute("select * from [test one]")
-            v = self.cursor.fetchone()[0]
-            self.assertEqual(v, 1)
-        finally:
-            self.cnxn.rollback()
-
     def test_lower_case(self):
         "Ensure pyodbc.lowercase forces returned column names to lowercase."
 
@@ -898,19 +791,20 @@ class SqlServerTestCase(unittest.TestCase):
 
         # Put it back so other tests don't fail.
         pyodbc.lowercase = False
-
+        
     def test_row_description(self):
         """
         Ensure Cursor.description is accessible as Row.cursor_description.
         """
         self.cursor = self.cnxn.cursor()
         self.cursor.execute("create table t1(a int, b char(3))")
+        self.cnxn.commit()
         self.cursor.execute("insert into t1 values(1, 'abc')")
 
         row = self.cursor.execute("select * from t1").fetchone()
 
         self.assertEqual(self.cursor.description, row.cursor_description)
-
+        
 
     def test_temp_select(self):
         # A project was failing to create temporary tables via select into.
@@ -925,13 +819,14 @@ class SqlServerTestCase(unittest.TestCase):
         self.assertEqual(type(v), str)
         self.assertEqual(v, "testing")
 
-    # Money
-    #
-    # The inputs are strings so we don't have to deal with floating point rounding.
 
-    for value in "-1234.56  -1  0  1  1234.56  123456789.21".split():
-        name = str(value).replace('.', '_').replace('-', 'neg_')
-        locals()['test_money_%s' % name] = _simpletest('money', Decimal(str(value)))
+    def test_money(self):
+        d = Decimal('123456.78')
+        self.cursor.execute("create table t1(i int identity(1,1), m money)")
+        self.cursor.execute("insert into t1(m) values (?)", d)
+        v = self.cursor.execute("select m from t1").fetchone()[0]
+        self.assertEqual(v, d)
+
 
     def test_executemany(self):
         self.cursor.execute("create table t1(a int, b varchar(10))")
@@ -970,19 +865,7 @@ class SqlServerTestCase(unittest.TestCase):
         for param, row in zip(params, rows):
             self.assertEqual(param[0], row[0])
             self.assertEqual(param[1], row[1])
-
-    def test_executemany_dae_0(self):
-        """
-        DAE for 0-length value
-        """
-        self.cursor.execute("create table t1(a nvarchar(max)) with (heap)")
-
-        self.cursor.fast_executemany = True
-        self.cursor.executemany("insert into t1(a) values(?)", [['']])
-
-        self.assertEqual(self.cursor.execute("select a from t1").fetchone()[0], '')
-
-        self.cursor.fast_executemany = False
+        
 
     def test_executemany_failure(self):
         """
@@ -993,10 +876,10 @@ class SqlServerTestCase(unittest.TestCase):
         params = [ (1, 'good'),
                    ('error', 'not an int'),
                    (3, 'good') ]
-
+        
         self.assertRaises(pyodbc.Error, self.cursor.executemany, "insert into t1(a, b) value (?, ?)", params)
 
-
+        
     def test_row_slicing(self):
         self.cursor.execute("create table t1(a int, b int, c int, d int)");
         self.cursor.execute("insert into t1 values(1,2,3,4)")
@@ -1054,16 +937,59 @@ class SqlServerTestCase(unittest.TestCase):
         rows = self.cursor.fetchall()
         self.assertTrue(rows is not None)
         self.assertTrue(len(rows) == 3)
-        self.cursor.execute("drop view t2")
 
     def test_autocommit(self):
         self.assertEqual(self.cnxn.autocommit, False)
+
         othercnxn = pyodbc.connect(self.connection_string, autocommit=True)
         self.assertEqual(othercnxn.autocommit, True)
+
         othercnxn.autocommit = False
         self.assertEqual(othercnxn.autocommit, False)
 
+    def test_unicode_results(self):
+        "Ensure unicode_results forces Unicode"
+        othercnxn = pyodbc.connect(self.connection_string, unicode_results=True)
+        othercursor = othercnxn.cursor()
 
+        # ANSI data in an ANSI column ...
+        othercursor.execute("create table t1(s varchar(20))")
+        othercursor.execute("insert into t1 values(?)", 'test')
+
+        # ... should be returned as Unicode
+        value = othercursor.execute("select s from t1").fetchone()[0]
+        self.assertEqual(value, u'test')
+
+
+    def test_informix_callproc(self):
+        try:
+            self.cursor.execute("drop procedure pyodbctest")
+            self.cnxn.commit()
+        except:
+            pass
+
+        self.cursor.execute("create table t1(s varchar(10))")
+        self.cursor.execute("insert into t1 values(?)", "testing")
+
+        self.cursor.execute("""
+                            create procedure pyodbctest @var1 varchar(32)
+                            as 
+                            begin 
+                              select s 
+                              from t1 
+                            return 
+                            end
+                            """)
+        self.cnxn.commit()
+
+        # for row in self.cursor.procedureColumns('pyodbctest'):
+        #     print row.procedure_name, row.column_name, row.column_type, row.type_name
+
+        self.cursor.execute("exec pyodbctest 'hi'")
+
+        # print self.cursor.description
+        # for row in self.cursor:
+        #     print row.s
 
     def test_skip(self):
         # Insert 1, 2, and 3.  Fetch 1, skip 2, fetch 3.
@@ -1100,7 +1026,7 @@ class SqlServerTestCase(unittest.TestCase):
             self.cursor.execute("create table t1 (word varchar (100))")
             words = set (['a'])
             self.cursor.executemany("insert into t1 (word) values (?)", [words])
-
+            
         self.assertRaises(TypeError, f)
 
     def test_row_execute(self):
@@ -1112,7 +1038,7 @@ class SqlServerTestCase(unittest.TestCase):
 
         self.cursor.execute("create table t2(n int, s varchar(10))")
         self.cursor.execute("insert into t2 values (?, ?)", row)
-
+        
     def test_row_executemany(self):
         "Ensure we can use a Row object as a parameter to executemany"
         self.cursor.execute("create table t1(n int, s varchar(10))")
@@ -1125,7 +1051,7 @@ class SqlServerTestCase(unittest.TestCase):
 
         self.cursor.execute("create table t2(n int, s varchar(10))")
         self.cursor.executemany("insert into t2 values (?, ?)", rows)
-
+        
     def test_description(self):
         "Ensure cursor.description is correct"
 
@@ -1159,7 +1085,7 @@ class SqlServerTestCase(unittest.TestCase):
         self.assertEqual(t[5], 2)       # scale
         self.assertEqual(t[6], True)    # nullable
 
-
+        
     def test_none_param(self):
         "Ensure None can be used for params other than the first"
         # Some driver/db versions would fail if NULL was not the first parameter because SQLDescribeParam (only used
@@ -1169,30 +1095,13 @@ class SqlServerTestCase(unittest.TestCase):
         # If SQLDescribeParam doesn't work, pyodbc would use VARCHAR which almost always worked.  However,
         # binary/varbinary won't allow an implicit conversion.
 
-        self.cursor.execute("create table t1(n int, blob varbinary(max)) with(heap)")
-        self.cursor.execute("insert into t1 values (1, 0x1234)")
+        self.cursor.execute("create table t1(n int, blob varbinary(max))")
+        self.cursor.execute("insert into t1 values (1, newid())")
         row = self.cursor.execute("select * from t1").fetchone()
         self.assertEqual(row.n, 1)
-        self.assertEqual(type(row.blob), bytes)
+        self.assertEqual(type(row.blob), buffer)
 
-        sql = "update t1 set n=?, blob=?"
-        try:
-            self.cursor.setinputsizes([(), (pyodbc.SQL_VARBINARY, None, None)])
-            self.cursor.execute(sql, 2, None)
-        except pyodbc.DataError:
-            if self.driver_type_is('freetds'):
-                # FREETDS_KNOWN_ISSUE
-                #
-                # cnxn.getinfo(pyodbc.SQL_DESCRIBE_PARAMETER) returns False for FreeTDS, so
-                # pyodbc can't call SQLDescribeParam to get the correct parameter type.
-                # This can lead to errors being returned from SQL Server when sp_prepexec is called, 
-                # e.g., "Implicit conversion from data type varchar to varbinary(max) is not allowed." 
-                #
-                # So at least verify that the user can manually specify the parameter type
-                self.cursor.setinputsizes([(), (pyodbc.SQL_VARBINARY, None, None)])
-                self.cursor.execute(sql, 2, None)
-            else:
-                raise
+        self.cursor.execute("update t1 set n=?, blob=?", 2, None)
         row = self.cursor.execute("select * from t1").fetchone()
         self.assertEqual(row.n, 2)
         self.assertEqual(row.blob, None)
@@ -1200,39 +1109,19 @@ class SqlServerTestCase(unittest.TestCase):
 
     def test_output_conversion(self):
         def convert(value):
-            # The value is the raw bytes (as a bytes object) read from the
-            # database.  We'll simply add an X at the beginning at the end.
-            return 'X' + value.decode('latin1') + 'X'
-
+            # `value` will be a string.  We'll simply add an X at the beginning at the end.
+            return 'X' + value + 'X'
+        self.cnxn.add_output_converter(pyodbc.SQL_VARCHAR, convert)
         self.cursor.execute("create table t1(n int, v varchar(10))")
         self.cursor.execute("insert into t1 values (1, '123.45')")
-
-        self.cnxn.add_output_converter(pyodbc.SQL_VARCHAR, convert)
         value = self.cursor.execute("select v from t1").fetchone()[0]
         self.assertEqual(value, 'X123.45X')
 
-        # Clear all conversions and try again.  There should be no Xs this time.
+        # Now clear the conversions and try again.  There should be no Xs this time.
         self.cnxn.clear_output_converters()
         value = self.cursor.execute("select v from t1").fetchone()[0]
         self.assertEqual(value, '123.45')
 
-        # Same but clear using remove_output_converter.
-        self.cnxn.add_output_converter(pyodbc.SQL_VARCHAR, convert)
-        value = self.cursor.execute("select v from t1").fetchone()[0]
-        self.assertEqual(value, 'X123.45X')
-
-        self.cnxn.remove_output_converter(pyodbc.SQL_VARCHAR)
-        value = self.cursor.execute("select v from t1").fetchone()[0]
-        self.assertEqual(value, '123.45')
-
-        # And lastly, clear by passing None for the converter.
-        self.cnxn.add_output_converter(pyodbc.SQL_VARCHAR, convert)
-        value = self.cursor.execute("select v from t1").fetchone()[0]
-        self.assertEqual(value, 'X123.45X')
-
-        self.cnxn.add_output_converter(pyodbc.SQL_VARCHAR, None)
-        value = self.cursor.execute("select v from t1").fetchone()[0]
-        self.assertEqual(value, '123.45')
 
     def test_too_large(self):
         """Ensure error raised if insert fails due to truncation"""
@@ -1241,6 +1130,17 @@ class SqlServerTestCase(unittest.TestCase):
         def test():
             self.cursor.execute("insert into t1 values (?)", value)
         self.assertRaises(pyodbc.DataError, test)
+
+    def test_geometry_null_insert(self):
+        def convert(value):
+            return value
+
+        self.cnxn.add_output_converter(-151, convert) # -151 is SQL Server's geometry
+        self.cursor.execute("create table t1(n int, v geometry)")
+        self.cursor.execute("insert into t1 values (?, ?)", 1, None)
+        value = self.cursor.execute("select v from t1").fetchone()[0]
+        self.assertEqual(value, None)
+        self.cnxn.clear_output_converters()
 
     def test_login_timeout(self):
         # This can only test setting since there isn't a way to cause it to block on the server side.
@@ -1267,55 +1167,41 @@ class SqlServerTestCase(unittest.TestCase):
 
         rows = list(rows)
         rows.sort() # uses <
-
-    def test_context_manager_success(self):
-        "Ensure `with` commits if an exception is not raised"
-        self.cursor.execute("create table t1(n int)")
-
+        
+    def test_context_manager(self):
         with pyodbc.connect(self.connection_string) as cnxn:
-            cursor = cnxn.cursor()
-            cursor.execute("insert into t1 values (1)")
+            cnxn.getinfo(pyodbc.SQL_DEFAULT_TXN_ISOLATION)
 
-        cnxn = None
-        cursor = None
-
-        rows = self.cursor.execute("select n from t1").fetchall()
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0][0], 1)
-
-    def test_context_manager_failure(self):
-        "Ensure `with` rolls back if an exception is raised"
-        # We'll insert a row and commit it.  Then we'll insert another row followed by an
-        # exception.
-
-        self.cursor.execute("create table t1(n int)")
-        self.cursor.execute("insert into t1 values (1)")
-
-        def _fail():
-            with pyodbc.connect(self.connection_string) as cnxn:
-                cursor = cnxn.cursor()
-                cursor.execute("insert into t1 values (2)")
-                cursor.execute("delete from bogus")
-
-        self.assertRaises(pyodbc.Error, _fail)
-
-        self.cursor.execute("select max(n) from t1")
-        val = self.cursor.fetchval()
-        self.assertEqual(val, 1)
-
+        # The connection should be closed now.
+        def test():
+            cnxn.getinfo(pyodbc.SQL_DEFAULT_TXN_ISOLATION)
+        self.assertRaises(pyodbc.ProgrammingError, test)
 
     def test_untyped_none(self):
         # From issue 129
         value = self.cursor.execute("select ?", None).fetchone()[0]
         self.assertEqual(value, None)
-
+        
     def test_large_update_nodata(self):
-        self.cursor.execute('create table t1(a varbinary(max)) with(heap)')
-        hundredkb = b'x'*100*1024
-        self.cursor.setinputsizes([(pyodbc.SQL_VARBINARY,0,0)])
+        self.cursor.execute('create table t1(a varbinary(max))')
+        hundredkb = buffer('x'*100*1024)
         self.cursor.execute('update t1 set a=? where 1=0', (hundredkb,))
 
-
+    def test_func_param(self):
+        self.cursor.execute('''
+                            create function func1 (@testparam varchar(4)) 
+                            returns @rettest table (param varchar(4))
+                            as 
+                            begin
+                                insert @rettest
+                                select @testparam
+                                return
+                            end
+                            ''')
+        self.cnxn.commit()
+        value = self.cursor.execute("select * from func1(?)", 'test').fetchone()[0]
+        self.assertEqual(value, 'test')
+        
     def test_no_fetch(self):
         # Issue 89 with FreeTDS: Multiple selects (or catalog functions that issue selects) without fetches seem to
         # confuse the driver.
@@ -1326,106 +1212,44 @@ class SqlServerTestCase(unittest.TestCase):
     def test_drivers(self):
         drivers = pyodbc.drivers()
         self.assertEqual(list, type(drivers))
-        self.assertTrue(len(drivers) > 0)
+        self.assertTrue(len(drivers) > 1)
 
         m = re.search('DRIVER={?([^}]+?)}?;', self.connection_string, re.IGNORECASE)
         current = m.group(1)
         self.assertTrue(current in drivers)
+            
 
-    def test_decode_meta(self):
-        """
-        Ensure column names with non-ASCII characters are converted using the configured encodings.
-        """
-        # This is from GitHub issue #190
-        self.cursor.execute("create table t1(a int)")
-        self.cursor.execute("insert into t1 values (1)")
-        self.cursor.execute('select a as "Tipología" from t1')
-        self.assertEqual(self.cursor.description[0][0], "Tipología")
 
-    def test_columns(self):
-        # When using aiohttp, `await cursor.primaryKeys('t1')` was raising the error
-        #
-        #   Error: TypeError: argument 2 must be str, not None
-        #
-        # I'm not sure why, but PyArg_ParseTupleAndKeywords fails if you use "|s" for an
-        # optional string keyword when calling indirectly.
-
-        self.cursor.execute("create table t1(a int, b varchar(3), xΏz varchar(4))")
-
-        self.cursor.columns('t1')
-        results = {row.column_name: row for row in self.cursor}
-        row = results['a']
-        assert row.type_name == 'int', row.type_name
-        row = results['b']
-        assert row.type_name == 'varchar'
-        assert row.column_size == 3
-
-        # Now do the same, but specifically pass in None to one of the keywords.  Old versions
-        # were parsing arguments incorrectly and would raise an error.  (This crops up when
-        # calling indirectly like columns(*args, **kwargs) which aiodbc does.)
-
-        self.cursor.columns('t1', schema=None, catalog=None)
-        results = {row.column_name: row for row in self.cursor}
-        row = results['a']
-        assert row.type_name == 'int', row.type_name
-        row = results['b']
-        assert row.type_name == 'varchar'
-        assert row.column_size == 3
-        row = results['xΏz']
-        assert row.type_name == 'varchar'
-        assert row.column_size == 4, row.column_size
-
-    def test_cancel(self):
-        # I'm not sure how to reliably cause a hang to cancel, so for now we'll settle with
-        # making sure SQLCancel is called correctly.
-        self.cursor.execute("select 1")
-        self.cursor.cancel()
-
-    def test_emoticons(self):
-        # https://github.com/mkleehammer/pyodbc/issues/423
-        #
-        # When sending a varchar parameter, pyodbc is supposed to set ColumnSize to the number
-        # of characters.  Ensure it works even with 4-byte characters.
-        #
-        # http://www.fileformat.info/info/unicode/char/1f31c/index.htm
-        v = "x \U0001F31C z"
-
-        self.cursor.execute("create table t1(s nvarchar(100))")
-        self.cursor.execute("insert into t1 values (?)", v)
-
-        result = self.cursor.execute("select s from t1").fetchone()[0]
-
-        self.assertEqual(result, v)
-        
 def main():
-    from optparse import OptionParser
-    parser = OptionParser(usage=usage)
-    parser.add_option("-v", "--verbose", action="count", default=0, help="Increment test verbosity (can be used multiple times)")
-    parser.add_option("-d", "--debug", action="store_true", default=False, help="Print debugging items")
-    parser.add_option("-t", "--test", help="Run only the named test")
+    from argparse import ArgumentParser
+    parser = ArgumentParser(usage=usage)
+    parser.add_argument("-v", "--verbose", action="count", help="increment test verbosity (can be used multiple times)")
+    parser.add_argument("-d", "--debug", action="store_true", default=False, help="print debugging items")
+    parser.add_argument("-t", "--test", help="run only the named test")
+    parser.add_argument("conn_str", nargs="*", help="connection string for Informix")
 
-    (options, args) = parser.parse_args()
+    args = parser.parse_args()
 
-    if len(args) > 1:
+    if len(args.conn_str) > 1:
         parser.error('Only one argument is allowed.  Do you need quotes around the connection string?')
 
-    if not args:
-        connection_string = load_setup_connection_string('sqldwtests')
+    if not args.conn_str:
+        connection_string = load_setup_connection_string('informixtests')
 
         if not connection_string:
             parser.print_help()
             raise SystemExit()
     else:
-        connection_string = args[0]
+        connection_string = args.conn_str[0]
 
-    if options.verbose:
+    if args.verbose:
         cnxn = pyodbc.connect(connection_string)
         print_library_info(cnxn)
         cnxn.close()
 
-    suite = load_tests(SqlServerTestCase, options.test, connection_string)
+    suite = load_tests(InformixTestCase, args.test, connection_string)
 
-    testRunner = unittest.TextTestRunner(verbosity=options.verbose)
+    testRunner = unittest.TextTestRunner(verbosity=args.verbose)
     result = testRunner.run(suite)
 
     return result

@@ -1,7 +1,7 @@
 #!/usr/bin/python
 
 usage="""\
-usage: %prog [options] filename
+%(prog)s [options] filename
 
 Unit tests for Microsoft Access
 
@@ -57,7 +57,7 @@ def _generate_test_string(length):
     if length <= len(_TESTSTR):
         return _TESTSTR[:length]
 
-    c = (length + len(_TESTSTR)-1) / len(_TESTSTR)
+    c = (length + len(_TESTSTR)-1) // len(_TESTSTR)
     v = _TESTSTR * c
     return v[:length]
 
@@ -67,9 +67,8 @@ class AccessTestCase(unittest.TestCase):
     SMALL_FENCEPOST_SIZES = [ 0, 1, 254, 255 ] # text fields <= 255
     LARGE_FENCEPOST_SIZES = [ 256, 270, 304, 508, 510, 511, 512, 1023, 1024, 2047, 2048, 4000, 4095, 4096, 4097, 10 * 1024, 20 * 1024 ]
 
-    ANSI_FENCEPOSTS    = [ _generate_test_string(size) for size in SMALL_FENCEPOST_SIZES ]
-    UNICODE_FENCEPOSTS = [ unicode(s) for s in ANSI_FENCEPOSTS ]
-    IMAGE_FENCEPOSTS   = ANSI_FENCEPOSTS + [ _generate_test_string(size) for size in LARGE_FENCEPOST_SIZES ]
+    CHAR_FENCEPOSTS    = [ _generate_test_string(size) for size in SMALL_FENCEPOST_SIZES ]
+    IMAGE_FENCEPOSTS   = CHAR_FENCEPOSTS + [ _generate_test_string(size) for size in LARGE_FENCEPOST_SIZES ]
 
     def __init__(self, method_name):
         unittest.TestCase.__init__(self, method_name)
@@ -77,11 +76,6 @@ class AccessTestCase(unittest.TestCase):
     def setUp(self):
         self.cnxn   = pyodbc.connect(CNXNSTRING)
         self.cursor = self.cnxn.cursor()
-
-        # https://docs.microsoft.com/en-us/sql/odbc/microsoft/desktop-database-driver-performance-issues?view=sql-server-2017
-        #
-        # As of the 4.0 drivers, you have to send as Unicode?
-        self.cnxn.setencoding(str, encoding='utf-16le')
 
         for i in range(3):
             try:
@@ -99,6 +93,11 @@ class AccessTestCase(unittest.TestCase):
         except:
             # If we've already closed the cursor or connection, exceptions are thrown.
             pass
+
+    def test_closed_reflects_connection_state(self):
+        self.assertFalse(self.cnxn.closed)
+        self.cnxn.close()
+        self.assertTrue(self.cnxn.closed)
 
     def test_multiple_bindings(self):
         "More than one bind and select on a cursor"
@@ -135,107 +134,83 @@ class AccessTestCase(unittest.TestCase):
 
     def test_getinfo_int(self):
         value = self.cnxn.getinfo(pyodbc.SQL_DEFAULT_TXN_ISOLATION)
-        self.assertTrue(isinstance(value, (int, long)))
+        self.assertTrue(isinstance(value, int))
 
     def test_getinfo_smallint(self):
         value = self.cnxn.getinfo(pyodbc.SQL_CONCAT_NULL_BEHAVIOR)
         self.assertTrue(isinstance(value, int))
 
-    def _test_strtype(self, sqltype, value, resulttype=None, colsize=None):
+    def _test_strtype(self, sqltype, value, colsize=None):
         """
         The implementation for string, Unicode, and binary tests.
         """
-        assert colsize is None or (value is None or colsize >= len(value)), 'colsize=%s value=%s' % (colsize, (value is None) and 'none' or len(value))
+        assert colsize is None or (value is None or colsize >= len(value)), 'colsize={} value={}'.format(colsize, (value is None) and 'none' or len(value))
 
         if colsize:
-            sql = "create table t1(n1 int not null, s1 %s(%s), s2 %s(%s))" % (sqltype, colsize, sqltype, colsize)
+            sql = "create table t1(n1 int not null, s1 {}({}), s2 {}({}))".format(sqltype, colsize, sqltype, colsize)
         else:
-            sql = "create table t1(n1 int not null, s1 %s, s2 %s)" % (sqltype, sqltype)
-
-        if resulttype is None:
-            # Access only uses Unicode, but strings might have been passed in to see if they can be written.  When we
-            # read them back, they'll be unicode, so compare our results to a Unicode version of `value`.
-            if type(value) is str:
-                resulttype = unicode
-            else:
-                resulttype = type(value)
+            sql = "create table t1(n1 int not null, s1 {}, s2 {})".format(sqltype, sqltype)
 
         self.cursor.execute(sql)
         self.cursor.execute("insert into t1 values(1, ?, ?)", (value, value))
-        v = self.cursor.execute("select s1, s2 from t1").fetchone()[0]
-        
-        if type(value) is not resulttype:
-            # To allow buffer --> db --> bytearray tests, always convert the input to the expected result type before
-            # comparing.
-            value = resulttype(value)
+        row = self.cursor.execute("select s1, s2 from t1").fetchone()
 
-        self.assertEqual(type(v), resulttype)
+        for i in range(2):
+            v = row[i]
 
-        if value is not None:
-            self.assertEqual(len(v), len(value))
+            self.assertEqual(type(v), type(value))
 
-        self.assertEqual(v, value)
+            if value is not None:
+                self.assertEqual(len(v), len(value))
 
-    #
-    # unicode
-    #
+            self.assertEqual(v, value)
 
-    def test_unicode_null(self):
-        self._test_strtype('varchar', None, colsize=255)
+
+    def test_varchar_null(self):
+        self._test_strtype('varchar', None, 255)
 
     # Generate a test for each fencepost size: test_varchar_0, etc.
     def _maketest(value):
         def t(self):
-            self._test_strtype('varchar', value, colsize=len(value))
-        t.__doc__ = 'unicode %s' % len(value)
+            self._test_strtype('varchar', value, len(value))
+        t.__doc__ = 'varchar %s' % len(value)
         return t
-    for value in UNICODE_FENCEPOSTS:
-        locals()['test_unicode_%s' % len(value)] = _maketest(value)
-
-    #
-    # ansi -> varchar
-    #
-
-    # Access only stores Unicode text but it should accept ASCII text.
-
-    # Generate a test for each fencepost size: test_varchar_0, etc.
-    def _maketest(value):
-        def t(self):
-            self._test_strtype('varchar', value, colsize=len(value))
-        t.__doc__ = 'ansi %s' % len(value)
-        return t
-    for value in ANSI_FENCEPOSTS:
-        locals()['test_ansivarchar_%s' % len(value)] = _maketest(value)
+    for value in CHAR_FENCEPOSTS:
+        locals()['test_varchar_%s' % len(value)] = _maketest(value)
 
     #
     # binary
     #
 
+    def test_null_binary(self):
+        self._test_strtype('binary', None)
+
     # Generate a test for each fencepost size: test_varchar_0, etc.
     def _maketest(value):
         def t(self):
-            self._test_strtype('varbinary', buffer(value), colsize=len(value), resulttype=pyodbc.BINARY)
+            # Convert to UTF-8 to create a byte array
+            self._test_strtype('varbinary', value.encode('utf-8'), len(value))
         t.__doc__ = 'binary %s' % len(value)
         return t
-    for value in ANSI_FENCEPOSTS:
+    for value in CHAR_FENCEPOSTS:
         locals()['test_binary_%s' % len(value)] = _maketest(value)
 
 
-    #
-    # image
-    #
+    # #
+    # # image
+    # #
 
-    def test_null_image(self):
-        self._test_strtype('image', None)
+    # def test_null_image(self):
+    #     self._test_strtype('image', None)
 
-    # Generate a test for each fencepost size: test_varchar_0, etc.
-    def _maketest(value):
-        def t(self):
-            self._test_strtype('image', buffer(value), resulttype=pyodbc.BINARY)
-        t.__doc__ = 'image %s' % len(value)
-        return t
-    for value in IMAGE_FENCEPOSTS:
-        locals()['test_image_%s' % len(value)] = _maketest(value)
+    # # Generate a test for each fencepost size: test_varchar_0, etc.
+    # def _maketest(value):
+    #     def t(self):
+    #         self._test_strtype('image', value.encode('utf-8'))
+    #     t.__doc__ = 'image %s' % len(value)
+    #     return t
+    # for value in IMAGE_FENCEPOSTS:
+    #     locals()['test_image_%s' % len(value)] = _maketest(value)
 
     #
     # memo
@@ -247,20 +222,11 @@ class AccessTestCase(unittest.TestCase):
     # Generate a test for each fencepost size: test_varchar_0, etc.
     def _maketest(value):
         def t(self):
-            self._test_strtype('memo', unicode(value))
+            self._test_strtype('memo', value)
         t.__doc__ = 'Unicode to memo %s' % len(value)
         return t
     for value in IMAGE_FENCEPOSTS:
         locals()['test_memo_%s' % len(value)] = _maketest(value)
-
-    # ansi -> memo
-    def _maketest(value):
-        def t(self):
-            self._test_strtype('memo', value)
-        t.__doc__ = 'ANSI to memo %s' % len(value)
-        return t
-    for value in IMAGE_FENCEPOSTS:
-        locals()['test_ansimemo_%s' % len(value)] = _maketest(value)
 
     def test_subquery_params(self):
         """Ensure parameter markers work in a subquery"""
@@ -297,7 +263,7 @@ class AccessTestCase(unittest.TestCase):
 
 
     def test_unicode_query(self):
-        self.cursor.execute(u"select 1")
+        self.cursor.execute("select 1")
         
     def test_negative_row_index(self):
         self.cursor.execute("create table t1(s varchar(20))")
@@ -434,7 +400,7 @@ class AccessTestCase(unittest.TestCase):
         self.assertEqual(False, result)
 
     def test_guid(self):
-        value = u"de2ac9c6-8676-4b0b-b8a6-217a8580cbee"
+        value = "de2ac9c6-8676-4b0b-b8a6-217a8580cbee"
         self.cursor.execute("create table t1(g1 uniqueidentifier)")
         self.cursor.execute("insert into t1 values (?)", value)
         v = self.cursor.execute("select * from t1").fetchone()[0]
@@ -600,8 +566,8 @@ class AccessTestCase(unittest.TestCase):
 
 
     def test_concatenation(self):
-        v2 = u'0123456789' * 25
-        v3 = u'9876543210' * 25
+        v2 = '0123456789' * 25
+        v3 = '9876543210' * 25
         value = v2 + 'x' + v3
 
         self.cursor.execute("create table t1(c2 varchar(250), c3 varchar(250))")
@@ -623,41 +589,37 @@ class AccessTestCase(unittest.TestCase):
 
 
 def main():
-    from optparse import OptionParser
-    parser = OptionParser(usage=usage)
-    parser.add_option("-v", "--verbose", default=0, action="count", help="Increment test verbosity (can be used multiple times)")
-    parser.add_option("-d", "--debug", action="store_true", default=False, help="Print debugging items")
-    parser.add_option("-t", "--test", help="Run only the named test")
+    from argparse import ArgumentParser
+    parser = ArgumentParser(usage=usage)
+    parser.add_argument("-v", "--verbose", action="count", default=0, help="increment test verbosity (can be used multiple times)")
+    parser.add_argument("-d", "--debug", action="store_true", default=False, help="print debugging items")
+    parser.add_argument("-t", "--test", help="run only the named test")
+    parser.add_argument('type', choices=['accdb', 'mdb'], help='Which type of file to test')
 
-    (options, args) = parser.parse_args()
+    args = parser.parse_args()
 
-    if len(args) != 1:
-        parser.error('dbfile argument required')
-
-    if args[0].endswith('.accdb'):
-        driver = 'Microsoft Access Driver (*.mdb, *.accdb)'
-        drvext = 'accdb'
-    else:
-        driver = 'Microsoft Access Driver (*.mdb)'
-        drvext = 'mdb'
+    DRIVERS = {
+        'accdb': 'Microsoft Access Driver (*.mdb, *.accdb)',
+        'mdb': 'Microsoft Access Driver (*.mdb)'
+    }
 
     here = dirname(abspath(__file__))
-    src = join(here, 'empty.' + drvext)
-    dest = join(here, 'test.' + drvext)
+    src = join(here, 'empty.' + args.type)
+    dest = join(here, 'test.' + args.type)
     shutil.copy(src, dest)
 
     global CNXNSTRING
-    CNXNSTRING = 'DRIVER={%s};DBQ=%s;ExtendedAnsiSQL=1' % (driver, dest)
+    CNXNSTRING = 'DRIVER={{{}}};DBQ={};ExtendedAnsiSQL=1'.format(DRIVERS[args.type], dest)
     print(CNXNSTRING)
 
-    if options.verbose:
+    if args.verbose:
         cnxn = pyodbc.connect(CNXNSTRING)
         print_library_info(cnxn)
         cnxn.close()
 
-    suite = load_tests(AccessTestCase, options.test)
+    suite = load_tests(AccessTestCase, args.test)
 
-    testRunner = unittest.TextTestRunner(verbosity=options.verbose)
+    testRunner = unittest.TextTestRunner(verbosity=args.verbose)
     result = testRunner.run(suite)
 
     return result
