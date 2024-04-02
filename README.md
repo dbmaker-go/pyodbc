@@ -38,11 +38,11 @@ python3 setup.py build_ext  --define DBMAKER  --include-dirs /home/dbmaker/5.4/i
 
 ### unit test for DBMaker
 
-**1) create db with utf-8 lcode**
+**1) create db named utf8db with utf-8 lcode**
 
-**2) cd tests3**
+**2) cd tests**
 
-**3) python dbmakertests.py -v "Driver=DBMaker 5.4 Driver; Database=utf8db; uid=sysadm; pwd="**
+**3) pytest dbmaker_test.py**
 
 Note: for windows, please copy dmapi54.dll to build path of pyodbc.
 

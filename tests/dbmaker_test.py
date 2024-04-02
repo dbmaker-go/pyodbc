@@ -20,7 +20,7 @@ import pyodbc, pytest
 # more secure?  No.)   It'll be put into .bashrc most likely.  Way to go.  Now I'll go rename
 # all of the others to DB specific names instead of PYODBC_CNXNSTR.  Hot garbage as usual.
 
-CNXNSTR = os.environ.get('PYODBC_DBMAKER', 'DSN=pyodbc-dbmaker')
+CNXNSTR = os.environ.get('PYODBC_DBMAKER', 'Driver=DBMaker 5.4 Driver; Database=utf8db; uid=sysadm; pwd=')
 
 
 def connect(autocommit=False, attrs_before=None):
