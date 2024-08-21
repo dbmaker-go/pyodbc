@@ -38,7 +38,6 @@ typedef unsigned long long UINT64;
 #if ( defined DBMAKER && defined(__GNUC__) && !defined(__MINGW32__))
 #define DWORD UDWORD
 #define WORD UDWORD
-#define size_t unsigned long
 #endif
 
 #define PY_SSIZE_T_CLEAN 1
